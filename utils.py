@@ -30,7 +30,8 @@ def get_image_features(img_paths, model, transform, device, load_path, batch_siz
                                          pin_memory=False,
                                          num_workers=16)
         
-        all_feats = torch.zeros(len(img_paths), 512)
+        shape = model.encode_image(ds[0].unsqueeze(0).to(device)).cpu().shape[-1]
+        all_feats = torch.zeros(len(img_paths), shape)
         
         for i, img_batch in enumerate(tqdm(dl)):
             feats = model.encode_image(img_batch.to(device)).cpu()
@@ -45,7 +46,8 @@ def get_text_features(texts, model, device, load_path, batch_size=16, save=True)
     if save and os.path.exists(load_path):
         all_feats = torch.load(load_path)
     else:
-        all_feats = torch.zeros(len(texts), 512)
+        shape = model.encode_image(clip.tokenize(texts[:2], truncate=True).to(device)).cpu().shape[-1]
+        all_feats = torch.zeros(len(texts), shape)
         for i in tqdm(list(range(0, len(texts), batch_size))):
             text_batch = texts[i: i + batch_size]
             tokenized = clip.tokenize(text_batch, truncate=True).to(device)
