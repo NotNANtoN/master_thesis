@@ -46,7 +46,7 @@ def get_text_features(texts, model, device, load_path, batch_size=16, save=True)
     if save and os.path.exists(load_path):
         all_feats = torch.load(load_path)
     else:
-        shape = model.encode_image(clip.tokenize(texts[:2], truncate=True).to(device)).cpu().shape[-1]
+        shape = model.encode_text(clip.tokenize(texts[:2], truncate=True).to(device)).cpu().shape[-1]
         all_feats = torch.zeros(len(texts), shape)
         for i in tqdm(list(range(0, len(texts), batch_size))):
             text_batch = texts[i: i + batch_size]
