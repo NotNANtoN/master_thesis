@@ -1,21 +1,8 @@
 import os
+
 import torch
 import clip
 from tqdm.auto import tqdm
-from PIL import Image
-
-
-class ImgDataset(torch.utils.data.Dataset):
-    def __init__(self, paths, transform):
-        super().__init__()
-        self.paths = paths
-        self.transform = transform
-        
-    def __len__(self):
-        return len(self.paths)
-    
-    def __getitem__(self, i):
-        return self.transform(Image.open(self.paths[i]))
 
 
 @torch.inference_mode()
