@@ -10,6 +10,7 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
     def __init__(self, model, mode, max_epochs, learning_rate, steps_per_epoch, 
                  weight_decay=0.2,
                  gen_freq=5,  # after how many val epochs there should be an image generation
+                 use_ffcv=False,
                 ):
         super().__init__()
         # args
@@ -21,6 +22,9 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
         self.weight_decay = weight_decay
         self.steps_per_epoch = steps_per_epoch
         self.gen_freq = gen_freq
+        
+        self.use_ffcv = False
+        self.sent_frac = 0.8
 
         #
         apply_train_mode(mode, self.model)
@@ -35,6 +39,12 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
     
     def training_step(self, batch, batch_idx):
         imgs, labels, tokenized_texts = batch
+        
+        if self.use_ffcv:
+            from clip_utils import SubsampleSents
+            from ffcv_custom_PTL_methods import UintArrToText, Tokenize
+            tokenized_texts = torch.cat([Tokenize()(SubsampleSents(self.sent_frac)(UintArrToText()(t))).cuda() for t in tokenized_texts])
+        
         loss, img_loss, text_loss, img_features, text_features, logits_per_image, logits_per_text = self.calc_loss(imgs, tokenized_texts)
         
         self.log('train_loss', loss, on_epoch=True, on_step=False, prog_bar=True, logger=True)
@@ -46,7 +56,7 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
         super().on_validation_start(*args, **kwargs)
         # calculate label encodings for zero-shot eval
         neutral_prompt = "An X-ray scan of the chest of a person"
-        label_prompts = [neutral_prompt + " with a " + label for label in self.label_names]
+        label_prompts = [neutral_prompt + " with " + label for label in self.label_names]
         tokenized_neutral = clip.tokenize([neutral_prompt]).to(self.device)
         tokenized_labels = clip.tokenize(label_prompts).to(self.device)
         label_feats = self.model.encode_text(tokenized_labels)
@@ -66,6 +76,10 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
     
     def validation_step(self, batch, batch_idx):
         imgs, labels, tokenized_texts = batch
+        if self.use_ffcv:
+            from ffcv_custom_PTL_methods import UintArrToText, Tokenize
+            tokenized_texts = torch.cat([Tokenize()(UintArrToText()(t)).cuda() for t in tokenized_texts])
+        
         loss, img_loss, text_loss, img_features, text_features, logits_per_image, logits_per_text = self.calc_loss(imgs, tokenized_texts)
         self.log('val_loss', loss, on_epoch=True, on_step=False, prog_bar=True, logger=True)
         #self.log('val_img_loss', img_loss, on_epoch=True, on_step=False, prog_bar=True, logger=True)
@@ -134,6 +148,9 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
         return logits_per_image, logits_per_text, image_features, text_features
     
     def gen_img_from_label(self):
+        if self.logger is None:
+            return
+        
         # init text2img
         import sys
         sys.path.append("../CLIPGuidance/")
@@ -179,7 +196,7 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
         imgs = []
         for label in used_names:
             imagine.reset()
-            label_prompt = neutral_prompt + " with a " + label
+            label_prompt = neutral_prompt + " with " + label
             imagine.set_clip_encoding(text=label_prompt) #"FINDING: The patient has a " + label)
             for i in range(200):
                 img, loss = imagine.train_step(0, 0)

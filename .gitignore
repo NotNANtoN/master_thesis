@@ -1,8 +1,10 @@
-flickr30k/
+flickr30ki/
 wikipedia-image-caption/
 *.pt
 *.zip
 *.csv
+
+temp_script.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

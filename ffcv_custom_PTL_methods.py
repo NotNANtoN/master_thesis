@@ -29,7 +29,7 @@ class FFCVCLDataset(torch.utils.data.Dataset):
         text = self.captions[i][-self.max_len:]  # delete first instead of last characters as the last sentences usually contain the finding
         # pad
         padded_text = text + (" " * (self.max_len - len(text)))
-        padded_text = np.frombuffer(padded_text.encode('ascii'), dtype='uint8')
+        padded_text = np.frombuffer(padded_text.encode("ascii", errors="replace").replace(b"?", b" "), dtype='uint8')
         return img, labels, padded_text
 
 

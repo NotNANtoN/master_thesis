@@ -8,6 +8,7 @@ import pytorch_lightning
 import torchvision.transforms as TF
 import numpy as np
 from torch.utils.data import DataLoader
+import ffcv
 from ffcv.fields.decoders import NDArrayDecoder, FloatDecoder
 import ffcv.transforms as FFCVT
 from ffcv.loader import Loader, OrderOption
@@ -130,6 +131,8 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
         self.root_folder = root_folder
         self.use_ffcv = use_ffcv
         self.transform = transform
+        self.sent_frac = sent_frac
+        self.use_augs = use_augs
         
         # load dataset
         df, label_names = load_dataset(dataset_name)
@@ -190,21 +193,22 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
             
             if use_ffcv:
                 from ffcv_custom_PTL_methods import ffcv_convert_dataset, FFCVCLDataset, UintArrToText, Tokenize
+                from ffcv.fields.decoders import RandomResizedCropRGBImageDecoder, CenterCropRGBImageDecoder, NDArrayDecoder
                 
                 max_len = 2000
                 self.ffcv_ds_train = os.path.join(root_folder, f'ffcv_datasets/{dataset_name}_train.beton')
                 self.ffcv_ds_val = os.path.join(root_folder, f'ffcv_datasets/{dataset_name}_val.beton')
                 self.ffcv_ds_test = os.path.join(root_folder, f'ffcv_datasets/{dataset_name}_test.beton')
                 if use_cl:
+                    # create ffcv datasets
+                    self.train_ds = FFCVCLDataset(train_paths, train_labels, train_texts, max_len=max_len)
+                    self.val_ds = FFCVCLDataset(val_paths, val_labels, val_texts, max_len=max_len)
+                    self.test_ds = FFCVCLDataset(test_paths, test_labels, test_texts, max_len=max_len)
                     if not os.path.exists(self.ffcv_ds_test):
-                        # create ffcv datasets
-                        train_ds = FFCVCLDataset(train_paths, train_labels, train_texts, max_len=max_len)
-                        val_ds = FFCVCLDataset(val_paths, val_labels, val_texts, max_len=max_len)
-                        test_ds = FFCVCLDataset(test_paths, test_labels, test_texts, max_len=max_len)
                         # convert them to .beton files 
-                        ffcv_convert_dataset(train_ds, self.ffcv_ds_train)
-                        ffcv_convert_dataset(val_ds, self.ffcv_ds_val)
-                        ffcv_convert_dataset(test_ds, self.ffcv_ds_test)
+                        ffcv_convert_dataset(self.train_ds, self.ffcv_ds_train)
+                        ffcv_convert_dataset(self.val_ds, self.ffcv_ds_val)
+                        ffcv_convert_dataset(self.test_ds, self.ffcv_ds_test)
 
                     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
                     mean = (0.48145466, 0.4578275, 0.40821073)
@@ -216,22 +220,28 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
                                      FFCVT.ToTorchImage(),
                                      FFCVT.Convert(torch.float16),
                                      TF.Normalize(mean, std), # Normalize using image statistics
+                                     #FFCVT.ToDevice(device, non_blocking=True),
                     ]
                     self.train_image_pipeline = [                
-                        ffcv.fields.decoders.module.RandomResizedCropRGBImageDecoder((224, 224)),
+                        RandomResizedCropRGBImageDecoder((224, 224)),
                         #RandomHorizontalFlip(),
                         FFCVT.Cutout(8, tuple(map(lambda x: int(x * 255), mean))),
                         FFCVT.RandomTranslate(padding=10, fill=mean),
-                        TF.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.0),
+                        #TF.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.0),
                     ] + base_pipeline
 
                     self.test_image_pipeline = [
-                        ffcv.fields.decoders.module.CenterCropRGBImageDecoder(224, 1),
+                        CenterCropRGBImageDecoder((224, 224), 1),
                     ] + base_pipeline
 
-                    self.labels_pipeline = [ffcv.fields.decoders.module.NDArrayDecoder(), FFCVT.ToTensor(), FFCVT.ToDevice(device, non_blocking=True),]
-                    self.train_text_pipeline = [ffcv.fields.decoders.module.NDArrayDecoder(), UintArrToText(), SubsampleSents(self.sent_frac), Tokenize(), FFCVT.ToDevice(device, non_blocking=True),]
-                    self.test_text_pipeline = [ffcv.fields.decoders.module.NDArrayDecoder(), UintArrToText(), Tokenize(), FFCVT.ToDevice(device, non_blocking=True),]
+                    self.labels_pipeline = [NDArrayDecoder(), FFCVT.ToTensor()]#. FFCVT.ToDevice(device, non_blocking=True),]
+                    self.train_text_pipeline = [NDArrayDecoder(), ]
+                                                #UintArrToText(), 
+                                                #SubsampleSents(self.sent_frac), 
+                                                #Tokenize()]#,FFCVT.ToDevice(device, non_blocking=True),]
+                    self.test_text_pipeline = [NDArrayDecoder(), ]
+                                               #UintArrToText(), 
+                                               #Tokenize()]#, FFCVT.ToDevice(device, non_blocking=True),]
                 else:
                     raise NotImplementedError
                 

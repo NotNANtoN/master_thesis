@@ -14,4 +14,6 @@ use_ffcv: True
 batch_size:
 gpu: 2
 
+debug: 0
+
 hydra.output_subdir:
