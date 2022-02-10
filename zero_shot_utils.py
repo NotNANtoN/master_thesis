@@ -4,7 +4,7 @@ import torch
 import numpy as np
 from tqdm.auto import tqdm
 
-from utils import get_image_features, get_text_features
+from clip_utils import get_image_features, get_text_features
 
 
 def calc_metrics(feats, caption_features):
@@ -129,7 +129,7 @@ def calc_accuracies(img_features, label_encs):
     return (r1_sum / (img_idx + 1), r5_sum / (img_idx + 1), r10_sum / (img_idx + 1))
 
 
-def calc_binary_acc(img_features, label_strs, label_names, pos_label_encs, neg_label_encs):
+def calc_binary_acc(img_features, labels, label_names, pos_label_encs, neg_label_encs):
     # make list if not list yet
     if not isinstance(pos_label_encs, list):
         pos_label_encs = [pos_label_encs]
@@ -137,7 +137,7 @@ def calc_binary_acc(img_features, label_strs, label_names, pos_label_encs, neg_l
     
     accs = []
     for img_idx in tqdm(range(len(img_features))):
-        gt_labels = label_strs[img_idx]
+        gt_labels = labels[img_idx]
         gt_label_idcs = torch.where(label_strs_to_int(gt_labels, label_names))[0]
         gt_binary = torch.zeros(len(label_names)).bool()
         gt_binary[gt_label_idcs] = True

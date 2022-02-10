@@ -1,0 +1,17 @@
+
+dataset_name: "mimic-cxr"
+model_name: "ViT-B/16" # ViT-L/14, ViT-B/16
+mode: "train_mlp_norm" # ["freeze", "train_norm", "full", "train_mlp_norm"]
+lr: 5e-6
+weight_decay: 0.2 # decay 0.05 in convnext, 0.2 in CLIP training
+use_augs: True
+sent_frac: 0.8 # proportion of sentences to sample during CL
+precision: 16
+max_epochs: 30
+val_check_interval: 300
+gen_freq: 15
+use_ffcv: True
+batch_size:
+gpu: 2
+
+hydra.output_subdir:
