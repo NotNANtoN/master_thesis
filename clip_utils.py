@@ -8,53 +8,14 @@ import pytorch_lightning
 import torchvision.transforms as TF
 import numpy as np
 from torch.utils.data import DataLoader
-import ffcv
-from ffcv.fields.decoders import NDArrayDecoder, FloatDecoder
-import ffcv.transforms as FFCVT
-from ffcv.loader import Loader, OrderOption
 
 from dataset_utils import load_dataset
 
 
-############### classes to modify to add adapters to CLIP
-"""
-class ResidualAttentionBlock(nn.Module):
-    def __init__(self, d_model: int, n_head: int, attn_mask: torch.Tensor = None):
-        super().__init__()
-
-        self.attn = nn.MultiheadAttention(d_model, n_head)
-        self.ln_1 = LayerNorm(d_model)
-        self.mlp = nn.Sequential(OrderedDict([
-            ("c_fc", nn.Linear(d_model, d_model * 4)),
-            ("gelu", QuickGELU()),
-            ("c_proj", nn.Linear(d_model * 4, d_model))
-        ]))
-        self.ln_2 = LayerNorm(d_model)
-        self.attn_mask = attn_mask
-
-    def attention(self, x: torch.Tensor):
-        self.attn_mask = self.attn_mask.to(dtype=x.dtype, device=x.device) if self.attn_mask is not None else None
-        return self.attn(x, x, x, need_weights=False, attn_mask=self.attn_mask)[0]
-
-    def forward(self, x: torch.Tensor):
-        x = x + self.attention(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
-        return x
-
-    
-class Transformer(nn.Module):
-    # clip has one transformer directly in it for text and another is visual.transformer
-    def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None):
-        super().__init__()
-        self.width = width
-        self.layers = layers
-        self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
-
-    def forward(self, x: torch.Tensor):
-        return self.resblocks(x)
-    
-""" 
-##################
+#import ffcv
+#from ffcv.fields.decoders import NDArrayDecoder, FloatDecoder
+#import ffcv.transforms as FFCVT
+#from ffcv.loader import Loader, OrderOption
 
 class ImageDataset(torch.utils.data.Dataset):
     def __init__(self, paths, labels, transform):
@@ -123,6 +84,7 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
                  use_cl=False,
                  root_folder="",
                  use_ffcv=False,
+                 num_workers=8,
                 ):
         super().__init__()
         self.dataset_name = dataset_name
@@ -133,6 +95,7 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
         self.transform = transform
         self.sent_frac = sent_frac
         self.use_augs = use_augs
+        self.num_workers = num_workers
         
         # load dataset
         df, label_names = load_dataset(dataset_name)
@@ -140,7 +103,7 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
         self.num_labels = len(label_names)
         # create masks
         train_mask = (df["split"] == "train").to_numpy()
-        val_mask = (df["split"] == "validate").to_numpy()
+        val_mask = ((df["split"] == "validate") | (df["split"] == "val")).to_numpy()
         test_mask = (df["split"] == "test").to_numpy()
         # apply splits
         train_labels = np.stack(df["labels"][train_mask].to_numpy())
@@ -187,15 +150,18 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
             val_paths = df["img_path"][val_mask].to_list()
             test_paths = df["img_path"][test_mask].to_list()
             # get texts (only used in CL mode)
+            if "caption" not in df.columns:
+                df["caption"] = np.nan
             train_texts = df["caption"][train_mask].to_list()
             val_texts = df["caption"][val_mask].to_list()
             test_texts = df["caption"][test_mask].to_list()
             
             if use_ffcv:
-                from ffcv_custom_PTL_methods import ffcv_convert_dataset, FFCVCLDataset, UintArrToText, Tokenize
+                from ffcv_custom_PTL_methods import ffcv_convert_dataset, FFCVCLDataset, UintArrToToken, SubsampleTokens
                 from ffcv.fields.decoders import RandomResizedCropRGBImageDecoder, CenterCropRGBImageDecoder, NDArrayDecoder
                 
                 max_len = 2000
+                max_tokens = 400
                 self.ffcv_ds_train = os.path.join(root_folder, f'ffcv_datasets/{dataset_name}_train.beton')
                 self.ffcv_ds_val = os.path.join(root_folder, f'ffcv_datasets/{dataset_name}_val.beton')
                 self.ffcv_ds_test = os.path.join(root_folder, f'ffcv_datasets/{dataset_name}_test.beton')
@@ -211,37 +177,51 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
                         ffcv_convert_dataset(self.test_ds, self.ffcv_ds_test)
 
                     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-                    mean = (0.48145466, 0.4578275, 0.40821073)
-                    std = (0.26862954, 0.26130258, 0.27577711)
+                    mean = np.array((0.48145466, 0.4578275, 0.40821073))
+                    std = np.array((0.26862954, 0.26130258, 0.27577711))
 
                     # create image pipelines
-                    base_pipeline = [FFCVT.ToTensor(),
+                    base_pipeline = [
+                                     FFCVT.ToTensor(),
                                      FFCVT.ToDevice(device, non_blocking=True),
                                      FFCVT.ToTorchImage(),
+                                     FFCVT.NormalizeImage(mean, std, np.float16),
                                      FFCVT.Convert(torch.float16),
-                                     TF.Normalize(mean, std), # Normalize using image statistics
-                                     #FFCVT.ToDevice(device, non_blocking=True),
+                                     FFCVT.ToDevice(device, non_blocking=True),     
                     ]
                     self.train_image_pipeline = [                
                         RandomResizedCropRGBImageDecoder((224, 224)),
                         #RandomHorizontalFlip(),
                         FFCVT.Cutout(8, tuple(map(lambda x: int(x * 255), mean))),
                         FFCVT.RandomTranslate(padding=10, fill=mean),
-                        #TF.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.0),
+                        #TF.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.0),
                     ] + base_pipeline
 
                     self.test_image_pipeline = [
                         CenterCropRGBImageDecoder((224, 224), 1),
                     ] + base_pipeline
-
-                    self.labels_pipeline = [NDArrayDecoder(), FFCVT.ToTensor()]#. FFCVT.ToDevice(device, non_blocking=True),]
-                    self.train_text_pipeline = [NDArrayDecoder(), ]
+                    # label pipeline
+                    self.labels_pipeline = [NDArrayDecoder(), 
+                                            FFCVT.ToTensor(),
+                                            FFCVT.ToDevice(device, non_blocking=True),]
+                    # text pipeline
+                    self.train_text_pipeline = [NDArrayDecoder(),
                                                 #UintArrToText(), 
                                                 #SubsampleSents(self.sent_frac), 
-                                                #Tokenize()]#,FFCVT.ToDevice(device, non_blocking=True),]
-                    self.test_text_pipeline = [NDArrayDecoder(), ]
+                                                #Tokenize(),
+                                                #UintArrToToken(self.sent_frac),
+                                                SubsampleTokens(shuffle=True),
+                                                FFCVT.ToTensor(),
+                                                FFCVT.ToDevice(device, non_blocking=True),]
+                                               #]
+                    self.test_text_pipeline = [NDArrayDecoder(),
                                                #UintArrToText(), 
-                                               #Tokenize()]#, FFCVT.ToDevice(device, non_blocking=True),]
+                                               #Tokenize(),
+                                               #UintArrToToken(0),
+                                               SubsampleTokens(shuffle=False),
+                                               FFCVT.ToTensor(),
+                                               FFCVT.ToDevice(device, non_blocking=True),]
+                                              #]
                 else:
                     raise NotImplementedError
                 
@@ -275,16 +255,16 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
             PIPELINES = {
               'image': self.train_image_pipeline,
               'labels': self.labels_pipeline,
-              'text': self.train_text_pipeline,
+              'tokens': self.train_text_pipeline,
             }
             loader = Loader(self.ffcv_ds_train,
                 batch_size=self.bs,
-                num_workers=16,
+                num_workers=self.num_workers,
                 order=ORDERING,
                 pipelines=PIPELINES)
             return loader
         else:
-            return DataLoader(self.train_ds, num_workers=16, shuffle=True, batch_size=self.bs, persistent_workers=1)
+            return DataLoader(self.train_ds, num_workers=self.num_workers, shuffle=True, batch_size=self.bs, persistent_workers=1)
 
     def val_dataloader(self):
         if self.use_ffcv:
@@ -292,16 +272,16 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
             PIPELINES = {
               'image': self.test_image_pipeline,
               'labels': self.labels_pipeline,
-              'text': self.test_text_pipeline,
+              'tokens': self.test_text_pipeline,
             }
             loader = Loader(self.ffcv_ds_val,
                 batch_size=self.bs,
-                num_workers=16,
+                num_workers=self.num_workers,
                 order=ORDERING,
                 pipelines=PIPELINES)
             return loader
         else:
-            return DataLoader(self.val_ds, num_workers=16, shuffle=False, batch_size=self.bs)
+            return DataLoader(self.val_ds, num_workers=self.num_workers, shuffle=False, batch_size=self.bs)
 
     def test_dataloader(self):
         if self.use_ffcv:
@@ -313,12 +293,12 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
             }
             loader = Loader(self.ffcv_ds_val,
                 batch_size=self.bs,
-                num_workers=16,
+                num_workers=self.num_workers,
                 order=ORDERING,
                 pipelines=PIPELINES)
             return loader
         else:
-            return DataLoader(self.test_ds, num_workers=16, shuffle=False, batch_size=self.bs)
+            return DataLoader(self.test_ds, num_workers=self.num_workers, shuffle=False, batch_size=self.bs)
 
 
 
@@ -336,7 +316,7 @@ class ImgDataset(torch.utils.data.Dataset):
 
     
 def apply_train_mode(mode, model):
-    # freeze certain layers
+    # freeze certain layers or add adapters
     if mode == "freeze":
         for p in model.parameters():
             p.requires_grad = False
@@ -349,6 +329,12 @@ def apply_train_mode(mode, model):
     elif mode == "train_mlp_norm":
         for n, p in model.named_parameters():
             p.requires_grad = ".ln_" in n or ".bn_" in n or ".mlp." in n
+    elif mode == "adapters":
+        if isinstance(model, clip.model.CLIP):
+            for n, p in model.named_parameters():
+                p.requires_grad = ".ln_" in n or ".adapter." in n
+        else:
+            raise NotImplementedError
 
     
 def load_clip(clip_name, device=None):

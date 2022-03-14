@@ -5,6 +5,22 @@ wikipedia-image-caption/
 *.csv
 
 temp_script.py
+.vscode/
+checkpoints/
+covidx/
+data/
+deep-image-prior/
+early_tests/
+flickr30k/
+mimic-cxr/
+models/
+multirun/
+outputs/
+pytorch_lightning/
+stylegan3/
+taming-transformers/
+taming/
+wandb/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

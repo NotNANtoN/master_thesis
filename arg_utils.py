@@ -1,6 +1,7 @@
 from hydra import initialize, compose
 import hydra
 
+
 def is_notebook():
     try:
         __IPYTHON__
