@@ -1,7 +1,6 @@
 hydra-core
 torch
 torchvision
-#ffcv
 nbformat
 git+https://github.com/openai/CLIP.git
 pytorch_lightning

@@ -13,7 +13,7 @@ from learning_utils import print_param_count
 def init_lit_model(clip_base_model, test_data_modules, steps_per_epoch, label_names, cfg):
     lit_model = LitCLCLIP(clip_base_model, test_data_modules,
                  cfg["mode"], cfg["max_epochs"], cfg["lr"], steps_per_epoch, 
-                 weight_decay=cfg["weight_decay"], gen_freq=cfg["gen_freq"], use_ffcv=cfg["use_ffcv"],
+                 weight_decay=cfg["weight_decay"], gen_freq=cfg["gen_freq"],
                  text2img_num_steps=cfg["text2img_num_steps"],
                  text2img_num_feats=cfg["text2img_num_feats"],
                  train_mode=cfg["mode"],
@@ -48,7 +48,6 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
     def __init__(self, model, test_dms, mode, max_epochs, learning_rate, steps_per_epoch, 
                  weight_decay=0.2,
                  gen_freq=5,  # after how many val epochs there should be an image generation
-                 use_ffcv=False,
                  text2img_num_steps=200,
                  text2img_num_feats=4,
                  train_mode="adapters",
@@ -75,7 +74,6 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
         self.mixup_labels = mixup_labels
         self.add_noise_level = add_noise_level
         self.mult_noise_level = mult_noise_level
-        self.use_ffcv = use_ffcv
         self.sent_frac = 0.8
         
         self.gen_count = 0

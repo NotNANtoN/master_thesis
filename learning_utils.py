@@ -31,10 +31,11 @@ def init_dm(dataset_name, root_folder, clip_base_model, transform, cfg, use_cl, 
             num_workers=8, dataset_size=None, pin_memory=False):
     data_module = FinetuneDataModule(clip_base_model, transform, dataset_name=dataset_name, mode=cfg["mode"], 
                                  use_augs=use_augs, use_cl=use_cl, batch_size=batch_size,
-                                root_folder=root_folder, use_ffcv=cfg["use_ffcv"], 
+                                root_folder=root_folder, 
                                 num_workers=num_workers, dataset_size=dataset_size, pin_memory=pin_memory,
                                 sent_frac=cfg["sent_frac"])
     return data_module
+
 
 def init_test_dms(names, root_folder, transform, cfg):
     return [init_dm(dataset_name, root_folder, None, transform, cfg, use_cl=False,
@@ -42,6 +43,7 @@ def init_test_dms(names, root_folder, transform, cfg):
                     num_workers=cfg["num_workers"], pin_memory=cfg["pin_memory"],
                     dataset_size=cfg["dataset_size"] if dataset_name == "mimic-cxr" else None)
             for dataset_name in names]
+
 
 def init_trainer(root_folder, cfg):
     if cfg["debug"]:
@@ -65,12 +67,4 @@ def init_trainer(root_folder, cfg):
                                         benchmark=True,
                                         #limit_train_batches=0.2,
                                         )
-
-    if cfg["use_ffcv"]:
-        # for ffcv
-        from types import MethodType
-        import ffcv_custom_PTL_methods 
-        trainer.fit_loop.epoch_loop.on_run_start = MethodType(ffcv_custom_PTL_methods.on_run_start, trainer.fit_loop.epoch_loop)
-        trainer.fit_loop.epoch_loop.advance = MethodType(ffcv_custom_PTL_methods.advance, trainer.fit_loop.epoch_loop)
-
     return trainer
