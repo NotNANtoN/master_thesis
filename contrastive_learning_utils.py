@@ -5,44 +5,10 @@ import clip
 import pytorch_lightning
 import numpy as np
 import pytorch_lightning
-from pytorch_lightning.loggers import WandbLogger
+from tqdm.auto import tqdm
 
 from clip_utils import load_clip, FinetuneDataModule, apply_train_mode
-
-
-def print_param_count(model):
-    count = 0
-    total_count = 1
-    for n, p in model.named_parameters():
-        if "adapter" in n:
-            #p.requires_grad = False
-        #if p.requires_grad:
-            #print(n, p.shape)
-            pass
-
-        if p.requires_grad:
-            count += p.numel()
-            #print(n)
-        else:
-            total_count += p.numel()    
-    print(count, total_count, count / total_count)
-
-
-def init_clip_model(cfg):
-    clip_base_model, transform, clip_name = load_clip(cfg["model_name"], device="cpu")
-    return clip_base_model, transform, clip_name
-
-
-def init_dm(dataset_name, root_folder, clip_base_model, transform, cfg, use_cl, use_augs, batch_size, num_workers=8):
-    data_module = FinetuneDataModule(clip_base_model, transform, dataset_name=dataset_name, mode=cfg["mode"], 
-                                 use_augs=use_augs, use_cl=use_cl, sent_frac=cfg["sent_frac"], batch_size=batch_size,
-                                root_folder=root_folder, use_ffcv=cfg["use_ffcv"], num_workers=num_workers)
-    return data_module
-
-def init_test_dms(names, root_folder, transform, cfg):
-    return [init_dm(dataset_name, root_folder, None, transform, cfg, use_cl=False,
-                    use_augs=False, batch_size=cfg["batch_size"] // 2, num_workers=2)
-            for dataset_name in names]
+from learning_utils import print_param_count
 
 def init_lit_model(clip_base_model, test_data_modules, steps_per_epoch, label_names, cfg):
     lit_model = LitCLCLIP(clip_base_model, test_data_modules,
@@ -59,39 +25,6 @@ def init_lit_model(clip_base_model, test_data_modules, steps_per_epoch, label_na
 
     print_param_count(lit_model)
     return lit_model
-
-
-def init_trainer(root_folder, cfg):
-    if cfg["debug"]:
-        wandb_logger = None
-    else:
-        wandb_logger = pytorch_lightning.loggers.WandbLogger(name=None, 
-                                                            save_dir=root_folder + "pytorch_lightning/", 
-                                                            offline=False, id=None, 
-                                            anonymous=None, version=None, project="cl_early_tests", 
-                                            log_model=False, experiment=None, prefix='')
-        wandb_logger.log_hyperparams(cfg)
-
-        # log gradients and model topology
-        #wandb_logger.watch(lit_model)
-
-    trainer = pytorch_lightning.Trainer(val_check_interval=cfg["val_check_interval"],
-                                        precision=cfg["precision"],
-                                        logger=wandb_logger,
-                                        max_epochs=cfg["max_epochs"],
-                                        gpus=int(torch.cuda.is_available()),
-                                        benchmark=True,
-                                        #limit_train_batches=0.2,
-                                        )
-
-    if cfg["use_ffcv"]:
-        # for ffcv
-        from types import MethodType
-        import ffcv_custom_PTL_methods 
-        trainer.fit_loop.epoch_loop.on_run_start = MethodType(ffcv_custom_PTL_methods.on_run_start, trainer.fit_loop.epoch_loop)
-        trainer.fit_loop.epoch_loop.advance = MethodType(ffcv_custom_PTL_methods.advance, trainer.fit_loop.epoch_loop)
-
-    return trainer
 
 
 
@@ -186,7 +119,6 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
         label_feats = F.normalize(self.model.encode_text(tokenized_labels), dim=-1)
         neutral_feats = F.normalize(self.model.encode_text(tokenized_neutral), dim=-1)
         return label_feats, neutral_feats
-            
     
     def validation_step(self, batch, batch_idx):
         imgs, labels, tokenized_texts = batch
@@ -237,15 +169,28 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
         img_features = F.normalize(torch.cat([step_out[0] for step_out in val_step_output_list]), dim=-1).cpu().float().numpy()
         labels = torch.cat([step_out[1] for step_out in val_step_output_list]).cpu().numpy()
         
-        # calculate retrieval at K
-        for k in [1, 5, 10, 20]:
-            self.k_shot_performance(img_features, labels, k=k)
+        use_multiprocessing = False
+        k_vals = [1, 5, 10, 20]
+        
+        if use_multiprocessing:
+            # calculate retrieval at K using multiprocessing
+            import multiprocessing as mp
+            pool = mp.Pool(mp.cpu_count())
+            for k in k_vals:
+                pool.apply_async(self.k_shot_performance, args=(img_features, labels, k))
+            pool.close()
+            pool.join()
+        else:
+            # calculate retrieval at K
+            for k in k_vals:
+                self.k_shot_performance(img_features, labels, k=k)
+                
+        return super().validation_epoch_end(val_step_output_list)
             
     def on_validation_model_eval(self, *args, **kwargs):
         super().on_validation_model_eval(*args, **kwargs)
     
-
-    def on_train_epoch_start(self) -> None:
+    def on_fit_end(self):
         # calculate performance on external test sets!
         if self.trainer.sanity_checking:
             return
@@ -253,24 +198,27 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
             self.test_performance(test_dm)
         self.model.train()
         
+        super().on_fit_end()
+        
+    def on_train_epoch_start(self) -> None:
+        # TODO: do only at start, 33%, 66% and end.
         # generate image from text here for some labels - need to enable gradient for it
         #if self.gen_count % self.gen_freq == 0 and self.text2img_num_feats > 0:
-            
         with torch.set_grad_enabled(True):
-                self.gen_img_from_label()
+            self.gen_img_from_label()
         #self.gen_count += 1
         
         return super().on_epoch_start()
 
     @torch.no_grad()
-    def get_feats(self, dl):
+    def get_feats(self, dl, use_tqdm=False):
         # get image features and labels
         img_features = []
         labels = []
-        for batch in dl:
+        for batch in tqdm(dl, disable=not use_tqdm):
             imgs, batch_labels = batch
-            feats = F.normalize(self.model.encode_image(imgs.cuda()), dim=-1)
-            img_features.append(feats.cpu())
+            feats = F.normalize(self.model.encode_image(imgs.cuda()), dim=-1).cpu()
+            img_features.append(feats)
             labels.append(batch_labels.cpu())
         img_features = torch.cat(img_features)
         labels = torch.cat(labels)
@@ -278,6 +226,7 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
 
     def test_performance(self, test_dm: FinetuneDataModule):
         name = test_dm.dataset_name 
+        print("Testing datset:", name)
 
         # calculate performance on external test dataset
         self.model.eval()
@@ -287,7 +236,7 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
         train_dl, test_dl = test_dm.train_dataloader(), test_dm.test_dataloader()
 
         # get image features and labels
-        train_img_features, train_labels = self.get_feats(train_dl)
+        train_img_features, train_labels = self.get_feats(train_dl, use_tqdm=True)
         test_img_features, test_labels = self.get_feats(test_dl)
 
         # calculate and log zero-shot accuracy
@@ -305,7 +254,7 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
 
             # import and fit logistic regression
             from sklearn.linear_model import LogisticRegression
-            lr = LogisticRegression(max_iter=500)
+            lr = LogisticRegression(solver="saga", max_iter=200)
             lr.fit(train_img_features, train_feat_labels)
             test_preds = lr.predict_proba(test_img_features)
             test_preds = test_preds[:, 1]
@@ -355,7 +304,7 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
             test_labels = feat_labels[test_idcs]
             # train linear probe
             from sklearn.linear_model import LogisticRegression
-            model = LogisticRegression()
+            model = LogisticRegression(solver="saga", max_iter=200)
             model.fit(train_data, train_labels)
             
             # make pred
@@ -381,7 +330,6 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
         bs = imgs.shape[0]
         image_features = F.normalize(self.model.encode_image(imgs), dim=-1)
         text_features = F.normalize(self.model.encode_text(tokenized_texts), dim=-1)
-        logit_scale = self.model.logit_scale.exp()
 
         # do mixup and add noise if desired in train mode
         if mode == 'train':
@@ -408,6 +356,7 @@ class LitCLCLIP(pytorch_lightning.LightningModule):
             # define labels
             ground_truth = torch.arange(bs, dtype=torch.long, device=imgs.device)
         # cosine similarity as logits
+        logit_scale = self.model.logit_scale.exp()
         logits_per_image = logit_scale * image_features @ text_features.t()
         logits_per_text = logits_per_image.t()
         # shape = [global_batch_size, global_batch_size]

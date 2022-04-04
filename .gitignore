@@ -4,6 +4,10 @@ wikipedia-image-caption/
 *.zip
 *.csv
 
+chexpert/
+pneumonia_data/
+rsna/
+
 temp_script.py
 .vscode/
 checkpoints/

@@ -85,6 +85,8 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
                  root_folder="",
                  use_ffcv=False,
                  num_workers=8,
+                 dataset_size=None,
+                 pin_memory=False,
                 ):
         super().__init__()
         self.dataset_name = dataset_name
@@ -96,6 +98,8 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
         self.sent_frac = sent_frac
         self.use_augs = use_augs
         self.num_workers = num_workers
+        self.dataset_size = dataset_size
+        self.pin_memory = pin_memory
         
         # load dataset
         df, label_names = load_dataset(dataset_name)
@@ -105,6 +109,50 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
         train_mask = (df["split"] == "train").to_numpy()
         val_mask = ((df["split"] == "validate") | (df["split"] == "val")).to_numpy()
         test_mask = (df["split"] == "test").to_numpy()
+        # apply dataset_size to train mask by choosing appropriate distribution depending on labels columns
+        if self.dataset_size is not None:
+            train_labels = np.stack(df["labels"][train_mask].to_numpy())
+            support_idcs = []
+            # for each label, select the first dataset_size samples where that label is true
+            for i in range(len(label_names)):
+                feat_labels = train_labels[:, i]
+                # get masks of pos/neg labels
+                true_mask = feat_labels == 1
+                # do not reuse indices we added before
+                true_mask[support_idcs] = 0
+                # get idcs
+                feat_supp_idcs = np.where(true_mask)[0][:self.dataset_size]            
+                # add to support idcs
+                support_idcs.extend(feat_supp_idcs.tolist())
+                
+            
+            filter_minimum_inclusive_set = False
+            if filter_minimum_inclusive_set:
+                # now we have the indices that include each label at least dataset_size times
+                # but we will throw out samples that do not belong to the minimum inclusive set (i.e. smallest set where at least dataset_size labels are true per feature)
+                train_labels[train_labels != 1] = 0  # set to 0 to sum across axis
+                train_labels = train_labels.astype(int)
+                
+                import numba
+                @numba.jit()
+                def should_remove(idx, support_idcs, train_labels, dataset_size):
+                    all_but_one = np.array([i for i in support_idcs if i != idx])
+                    # labels without that idx
+                    remaining_labels = train_labels[all_but_one]
+                    # check if the count of each label per feature is at least dataset_size, if that is the case remove the idx from support idcs
+                    return not (sum(np.sum(remaining_labels, axis=0) < dataset_size) > 0)
+                for idx in tqdm(support_idcs[:]):
+                    if should_remove(idx, np.array(support_idcs), train_labels, dataset_size):
+                        support_idcs.remove(idx)
+                        
+                print("Num idcs after removal: ", len(support_idcs))
+            # create new train mask where only support idcs (minimum inclusive set) are true
+            # which of the original train idcs to we keep?
+            train_idcs = np.arange(len(train_mask))[train_mask]
+            keep_idcs = train_idcs[support_idcs]
+            # overwrite train mask
+            train_mask = np.array([i in keep_idcs for i in range(len(df))])                
+                
         # apply splits
         train_labels = np.stack(df["labels"][train_mask].to_numpy())
         val_labels = np.stack(df["labels"][val_mask].to_numpy())
@@ -225,7 +273,6 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
                 else:
                     raise NotImplementedError
                 
-                
             else:
                 if use_cl:
                     # create ds                
@@ -264,7 +311,9 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
                 pipelines=PIPELINES)
             return loader
         else:
-            return DataLoader(self.train_ds, num_workers=self.num_workers, shuffle=True, batch_size=self.bs, persistent_workers=1)
+            return DataLoader(self.train_ds, num_workers=self.num_workers, shuffle=True,
+                              batch_size=self.bs, persistent_workers=1,
+                              pin_memory=self.pin_memory)
 
     def val_dataloader(self):
         if self.use_ffcv:
@@ -281,7 +330,8 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
                 pipelines=PIPELINES)
             return loader
         else:
-            return DataLoader(self.val_ds, num_workers=self.num_workers, shuffle=False, batch_size=self.bs)
+            return DataLoader(self.val_ds, num_workers=self.num_workers,
+                              shuffle=False, batch_size=self.bs, pin_memory=self.pin_memory)
 
     def test_dataloader(self):
         if self.use_ffcv:
@@ -298,7 +348,8 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
                 pipelines=PIPELINES)
             return loader
         else:
-            return DataLoader(self.test_ds, num_workers=self.num_workers, shuffle=False, batch_size=self.bs)
+            return DataLoader(self.test_ds, num_workers=self.num_workers,
+                              shuffle=False, batch_size=self.bs, pin_memory=self.pin_memory)
 
 
 

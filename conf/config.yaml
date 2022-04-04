@@ -1,5 +1,5 @@
 dataset_name: "mimic-cxr"
-model_name: "ViT-B/16" # ViT-L/14, ViT-B/16
+model_name: "ViT-B/16" # ViT-L/14, ViT-B/16, ViT-B/32
 mode: "adapters" # ["adapters", "freeze", "train_norm", "full", "train_mlp_norm"]
 
 lr: 5e-5
@@ -11,6 +11,7 @@ max_epochs: 10
 val_check_interval: 1500
 gen_freq: 15
 batch_size:
+dataset_size:
 
 gpu: 2
 
@@ -25,5 +26,6 @@ mult_noise_level: 0.0
 use_ffcv: False
 debug: 0
 seed: 0
-
+num_workers: 16
+pin_memory: True
 hydra.output_subdir:

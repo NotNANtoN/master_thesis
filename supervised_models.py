@@ -30,6 +30,8 @@ class LitCLIP(pytorch_lightning.LightningModule):
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.steps_per_epoch = steps_per_epoch
+        self.eps = 1e-6
+        self.betas = (0.9, 0.98)
         # loss func
         neg_fraction = 1 - pos_fraction
         pos_weight = neg_fraction / pos_fraction if use_pos_weight else None
@@ -81,6 +83,8 @@ class LitCLIP(pytorch_lightning.LightningModule):
                     for i in range(len(class_aucs))}
         self.log_dict(auc_dict, on_epoch=True)
         self.log('val_auroc_macro', class_aucs.mean(), on_epoch=True, prog_bar=True)
+        self.log('val_auroc_micro', sklearn.metrics.roc_auc_score(targets, preds, average="micro"),
+                  on_epoch=True, prog_bar=True)
         
         # metrics based on binary predictions
         binary_preds = (preds > 0.5).astype(int)
@@ -111,11 +115,12 @@ class LitCLIP(pytorch_lightning.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(),
                               lr=self.learning_rate,#5e-5,
-                              betas=(0.9, 0.98),
-                              eps=1e-6,
+                              betas=self.betas,
+                              eps=self.eps,
                               weight_decay=self.weight_decay) #Params used from paper, the lr is smaller, more safe for fine tuning to new dataset
         
-        self.scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, self.learning_rate, steps_per_epoch=self.steps_per_epoch, epochs=self.max_epochs, pct_start=0.05)
+        self.scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, self.learning_rate, steps_per_epoch=self.steps_per_epoch,
+                                                             epochs=self.max_epochs, pct_start=0.05)
         scheduler = {"scheduler": self.scheduler, 
                      "interval": "step" }  # necessary to make PL call the scheduler.step after every batch
         return [optimizer], [scheduler]
