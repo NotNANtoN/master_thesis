@@ -1,26 +1,43 @@
 dataset_name: "mimic-cxr"
-model_name: "densenet" #"ViT-B/16, densenet, ViT-L/14
-mode: "train_full" # ["freeze", "train_norm", "train_full", "train_mlp_norm"]
+model_name: "densenet_256" #"ViT-B/16, densenet, ViT-L/14
+mode: "train_mlp_norm" # ["freeze", "full", "train_mlp_norm"]
+dataset_size: 1.0
 
-lr : 1e-6 # densenet = 0.0003
+lr : 1e-5 # densenet = 0.0003
 weight_decay: 0.2
-batch_size: 32
+batch_size:
+grad_acc: 1
+adjust_grad_acc_to:
+
 
 rot_aug: 45
 shift_aug: 0.15
 scale_aug: 0.1
 
-img_value_scale: (1024,1024)
-input_res: (224,224)
+pretrained: 1
+down_sample_size: 256
+adapter_flow: easy
 
-lr_scale_when_plateau: 0.1
-lr_patience: 5
+#img_value_scale: (1024,1024)
+#input_res: (224,224)
 
+#lr_scale_when_plateau: 0.1
+#lr_patience: 5
+
+eps: 1e-6
+beta1: 0.9
+beta2: 0.98
+
+max_epochs: 10
 
 # do not change
 use_augs: 1
-max_epochs: 20
 precision: 16
 use_pos_weight: 1
 gpu: 0
+num_gpus: 1
+strategy: "dp"
 seed: 0
+num_seeds: 1
+debug: 0
+max_steps: -1

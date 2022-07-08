@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from joblib import Parallel, delayed
+from matplotlib import pyplot as plt
 
 import pandas as pd
 import numpy as np

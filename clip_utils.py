@@ -1,4 +1,5 @@
 import os
+from regex import S
 
 import torch
 import clip
@@ -7,7 +8,8 @@ from PIL import Image
 import pytorch_lightning
 import torchvision.transforms as TF
 import numpy as np
-from torch.utils.data import DataLoader
+from torch.utils.data import TensorDataset, DataLoader
+
 
 from dataset_utils import load_dataset
 
@@ -27,29 +29,40 @@ class ImageDataset(torch.utils.data.Dataset):
     
 
 class SubsampleSents(torch.nn.Module):
-    def __init__(self, frac, min_sent_len=5):
+    def __init__(self, frac, randomize_order, min_sent_len=5):
         super().__init__()
         self.frac = frac
         self.min_sent_len = min_sent_len
+        self.randomize_order = randomize_order
         
     def forward(self, x):
-        sents = [sent.strip() for sent in x.split(".") if len(sent) > self.min_sent_len]
-        num_sents_used = round(len(sents) * self.frac)
-        sents_used = np.random.choice(sents, num_sents_used, replace=False)
-        text = ". ".join(sents_used)
+        sents = [s.replace("_", "") for s in x.split(".")]
+        sents = [s.strip() for s in sents]
+        sents = [s for s in sents if len(s) >= self.min_sent_len]
+        
+        if self.randomize_order:
+            np.random.shuffle(sents)
+        if self.frac < 1.0:
+            num_sents_used = round(len(sents) * self.frac)
+            idcs = list(range(len(sents)))
+            idcs_used = sorted(np.random.choice(idcs, num_sents_used, replace=False))
+            sents = [sents[i] for i in idcs_used]
+        text = ". ".join(sents)
         return text
 
 
 class CLDataset(torch.utils.data.Dataset):
-    def __init__(self, paths, labels, captions, transform, sent_frac=1.0):
+    def __init__(self, paths, labels, captions, transform, 
+                 sent_frac=1.0, randomize_order=False):
         super().__init__()
         self.paths = paths
         self.labels = labels
         self.captions = captions
         self.transform = transform
         self.sent_frac = sent_frac
+        self.randomize_order = randomize_order
         
-        self.sent_subsampler = SubsampleSents(self.sent_frac)
+        self.sent_subsampler = SubsampleSents(self.sent_frac, randomize_order)
         
     def __len__(self):
         return len(self.paths)
@@ -60,7 +73,7 @@ class CLDataset(torch.utils.data.Dataset):
         text = self.captions[i]
         
         # add data agumentations for text
-        if self.sent_frac < 1.0:
+        if self.sent_frac < 1.0 or self.randomize_order:
             text = self.sent_subsampler(text)
             
         # tokenize text
@@ -78,9 +91,11 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
                  sent_frac=0.8,
                  use_cl=False,
                  root_folder="",
-                 num_workers=8,
+                 num_workers=4,
                  dataset_size=None,
                  pin_memory=False,
+                 randomize_order=False,
+                 seed=42,
                 ):
         super().__init__()
         self.dataset_name = dataset_name
@@ -102,8 +117,15 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
         train_mask = (df["split"] == "train").to_numpy()
         val_mask = ((df["split"] == "validate") | (df["split"] == "val")).to_numpy()
         test_mask = (df["split"] == "test").to_numpy()
-        # apply dataset_size to train mask by choosing appropriate distribution depending on labels columns
+        
         if self.dataset_size is not None:
+            train_count = train_mask.sum()
+            remove_count = int((1 - self.dataset_size) * train_count)
+            np.random.seed(seed)
+            # set train_reduced_count random parts of train_mask, where train_mask is currently True, to False
+            train_mask[np.random.choice(np.where(train_mask)[0], remove_count, replace=False)] = False
+        elif 1 == 0:
+            # apply dataset_size to train mask by choosing appropriate distribution depending on labels columns
             train_labels = np.stack(df["labels"][train_mask].to_numpy())
             support_idcs = []
             # for each label, select the first dataset_size samples where that label is true
@@ -176,6 +198,7 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
             self.bs = 512
         else:
             if self.augs is None:
+                print("No training set augmentation specified!")
                 train_transform = transform
             else:
                 train_transform = self.augs
@@ -193,7 +216,8 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
                 
             if use_cl:
                 # create ds                
-                self.train_ds = CLDataset(train_paths, train_labels, train_texts, train_transform, sent_frac=sent_frac)
+                self.train_ds = CLDataset(train_paths, train_labels, train_texts, train_transform, 
+                                          sent_frac=sent_frac, randomize_order=randomize_order,)
                 self.val_ds = CLDataset(val_paths, val_labels, val_texts, transform)
                 self.test_ds = CLDataset(test_paths, test_labels, test_texts, transform)
             else:
@@ -204,27 +228,22 @@ class FinetuneDataModule(pytorch_lightning.LightningDataModule):
             
         self.steps_per_epoch = len(self.train_ds) // self.bs + (len(self.train_ds) % self.bs != 0)
         self.pos_fraction = torch.from_numpy(train_labels.mean(axis=0))
-        
 
     def setup(self, stage=None):
         pass
-        #self.mnist_test = MNIST(self.data_dir, train=False)
-        #self.mnist_predict = MNIST(self.data_dir, train=False)
-        #mnist_full = MNIST(self.data_dir, train=True)
-        #self.mnist_train, self.mnist_val = random_split(mnist_full, [55000, 5000])
 
     def train_dataloader(self):
         return DataLoader(self.train_ds, num_workers=self.num_workers, shuffle=True,
-                              batch_size=self.bs, persistent_workers=1,
+                              batch_size=self.bs,# persistent_workers=1,
                               pin_memory=self.pin_memory)
 
     def val_dataloader(self):
         return DataLoader(self.val_ds, num_workers=self.num_workers,
-                              shuffle=False, batch_size=self.bs, pin_memory=self.pin_memory)
+                              shuffle=False, batch_size=128, pin_memory=self.pin_memory)
 
     def test_dataloader(self):
         return DataLoader(self.test_ds, num_workers=self.num_workers,
-                              shuffle=False, batch_size=self.bs, pin_memory=self.pin_memory)
+                              shuffle=False, batch_size=128, pin_memory=self.pin_memory)
 
 
 
@@ -242,8 +261,11 @@ class ImgDataset(torch.utils.data.Dataset):
 
     
 def apply_train_mode(mode, model):
+    if "RN" in model.name:
+        for p in model.parameters():
+            p.requires_grad = True
     # freeze certain layers or add adapters
-    if mode == "freeze":
+    elif mode == "freeze":
         for p in model.parameters():
             p.requires_grad = False
     elif mode == "train_norm":
@@ -256,20 +278,38 @@ def apply_train_mode(mode, model):
         for n, p in model.named_parameters():
             p.requires_grad = ".ln_" in n or ".bn_" in n or ".mlp." in n
     elif mode == "adapters":
-        if isinstance(model, clip.model.CLIP):
+        #from contrastive_learning_utils import LitCLCLIP
+        #from supervised_models import CLIPClassifier
+        from clip.model import VisionTransformer
+        if isinstance(model, clip.model.CLIP) or isinstance(model, VisionTransformer):# or isinstance(model, LitCLCLIP)# or isinstance(model, CLIPClassifier):
             for n, p in model.named_parameters():
-                p.requires_grad = ".ln_" in n or ".adapter." in n
+                p.requires_grad = ".ln_" in n or "adapter" in n
         else:
-            raise NotImplementedError
+            raise NotImplementedError(f"Adapter training not supported for {model.name} of type {type(model)}")
+    elif mode == "adapters_correct":
+        if isinstance(model, clip.model.CLIP) or isinstance(model, VisionTransformer):# or isinstance(model, LitCLCLIP)# or isinstance(model, CLIPClassifier):
+            for n, p in model.named_parameters():
+                p.requires_grad = "adapter" in n
+        else:
+            raise NotImplementedError(f"Adapter training not supported for {model.name} of type {type(model)}")
+    else:
+        raise NotImplementedError(f"Unknown training mode {mode}")
 
     
-def load_clip(clip_name, device=None):
+def load_clip(clip_name, mode, device=None, down_sample_size=16, adapter_flow="hard"):
     # clip_models: ['RN50', 'RN101', 'RN50x4', 'RN50x16', 'ViT-B/32', 'ViT-B/16']
     device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, transform = clip.load(clip_name, jit=False, device=device)
     model.device = device
     clip_load_name = clip_name.replace("/", "_")
     model.name = clip_load_name
+    
+    if "RN" not in clip_name:
+        if "adapters" in mode:
+            from adapter_utils import add_adapters
+            model = add_adapters(model, down_sample_size, adapter_flow=adapter_flow)
+        
+    apply_train_mode(mode, model)
     return model, transform, clip_load_name
 
 
@@ -279,7 +319,7 @@ def get_clip_img_caption_features(df, model, transform, dataset_name, bs=32):
     os.makedirs(load_path, exist_ok=True)
     # get features
     no_model_given = model is not None and not isinstance(model, str)
-    device = model.device if no_model_given else None
+    device = "cuda" # model.device if no_model_given else None
     model_name = model.name if no_model_given else model
     img_features = get_image_features(df["img_path"].to_list(), model, transform, device, 
                                       os.path.join(load_path, f"{model_name}_img_feats.pt"), 
@@ -293,38 +333,40 @@ def get_clip_img_caption_features(df, model, transform, dataset_name, bs=32):
 @torch.inference_mode()
 def get_image_features(img_paths, model, transform, device, load_path, batch_size=16, save=True):
     if save and os.path.exists(load_path):
-        all_feats = torch.load(load_path)
-    else:
-        ds = ImgDataset(img_paths, transform)
-        dl = torch.utils.data.DataLoader(ds, 
-                                         batch_size=batch_size, 
-                                         pin_memory=False,
-                                         num_workers=16)
-        
-        shape = model.encode_image(ds[0].unsqueeze(0).to(device)).cpu().shape[-1]
-        all_feats = torch.zeros(len(img_paths), shape)
-        
-        for i, img_batch in enumerate(tqdm(dl)):
-            feats = model.encode_image(img_batch.to(device)).cpu()
-            all_feats[i * batch_size: i * batch_size + batch_size] = feats
-        if save:
-            torch.save(all_feats, load_path)
+        return torch.load(load_path)
+    
+    ds = ImgDataset(img_paths, transform)
+    dl = torch.utils.data.DataLoader(ds, 
+                                        batch_size=batch_size, 
+                                        pin_memory=False,
+                                        num_workers=16)
+    
+   
+    print(model)
+    print(ds[0].shape)
+    shape = model.encode_image(ds[0].unsqueeze(0).to(device)).cpu().shape[-1]
+    all_feats = torch.zeros(len(img_paths), shape)
+    
+    for i, img_batch in enumerate(tqdm(dl)):
+        feats = model.encode_image(img_batch.to(device)).cpu()
+        all_feats[i * batch_size: i * batch_size + batch_size] = feats
+    if save:
+        torch.save(all_feats, load_path)
     return all_feats
 
 
 @torch.inference_mode()
 def get_text_features(texts, model, device, load_path, batch_size=16, save=True):
     if save and os.path.exists(load_path):
-        all_feats = torch.load(load_path)
-    else:
-        shape = model.encode_text(clip.tokenize(texts[:2], truncate=True).to(device)).cpu().shape[-1]
-        all_feats = torch.zeros(len(texts), shape)
-        for i in tqdm(list(range(0, len(texts), batch_size))):
-            text_batch = texts[i: i + batch_size]
-            tokenized = clip.tokenize(text_batch, truncate=True).to(device)
-            text_feats = model.encode_text(tokenized)
-            text_feats = text_feats.cpu().float()
-            all_feats[i: i + batch_size] = text_feats
-        if save:
-            torch.save(all_feats, load_path)
+        return torch.load(load_path)
+    shape = model.encode_text(clip.tokenize(texts[:2], truncate=True).to(device)).cpu().shape[-1]
+    all_feats = torch.zeros(len(texts), shape)
+    for i in tqdm(list(range(0, len(texts), batch_size))):
+        text_batch = texts[i: i + batch_size]
+        tokenized = clip.tokenize(text_batch, truncate=True).to(device)
+        text_feats = model.encode_text(tokenized)
+        text_feats = text_feats.cpu().float()
+        all_feats[i: i + batch_size] = text_feats
+    if save:
+        torch.save(all_feats, load_path)
     return all_feats

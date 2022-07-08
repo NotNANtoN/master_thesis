@@ -10,28 +10,21 @@ import sklearn
 
 from clip_utils import get_clip_img_caption_features, apply_train_mode
 
-
-def convert_models_to_fp32(model):
-    #https://github.com/openai/CLIP/issues/57
-    for p in model.parameters(): 
-        p.data = p.data.float() 
-        if p.grad is not None:
-            p.grad.data = p.grad.data.float() 
-
             
 class LitCLIP(pytorch_lightning.LightningModule):
-    def __init__(self, model, max_epochs, learning_rate, steps_per_epoch, 
-                 weight_decay=0.2, use_pos_weight=True, pos_fraction=0.5):
+    def __init__(self, model, label_names, max_epochs, learning_rate, steps_per_epoch, 
+                 weight_decay=0.2, use_pos_weight=True, pos_fraction=0.5,
+                 eps=1e-6, beta1=0.9, beta2=0.98):
         super().__init__()
         # args
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=['model'])
         self.max_epochs = max_epochs
         self.model = model
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.steps_per_epoch = steps_per_epoch
-        self.eps = 1e-6
-        self.betas = (0.9, 0.98)
+        self.eps = eps
+        self.betas = (beta1, beta2)
         # loss func
         neg_fraction = 1 - pos_fraction
         pos_weight = neg_fraction / pos_fraction if use_pos_weight else None
@@ -39,20 +32,23 @@ class LitCLIP(pytorch_lightning.LightningModule):
             print("Pos weight: ", pos_weight)
         self.loss_func = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         # metrics
-        self.label_names = model.label_names
-        #self.auroc = torchmetrics.AUROC(num_classes=model.num_labels, average=None)
-        #self.ap = torchmetrics.AveragePrecision(num_classes=model.num_labels, average="macro")
-        #self.f1 = torchmetrics.F1Score(num_classes=model.num_labels)
+        self.label_names = label_names
         
     def forward(self, x):
         return self.model(x)
     
+    def predict_step(self, batch, batch_idx: int, dataloader_idx):
+        x, y = batch
+        pred = self.model(x)
+        return torch.sigmoid(pred)
+        
     def training_step(self, batch, batch_idx):
         x, y = batch
         loss, preds = self.calc_loss(x, y)
         self.log('train_loss', loss, on_epoch=True, on_step=False, prog_bar=True, logger=True)
-        lr = self.scheduler.get_last_lr()[0]
-        self.log('lr', lr, on_epoch=False, on_step=True, prog_bar=False, logger=True)
+        if batch_idx % 100 == 0:
+            lr = self.scheduler.get_last_lr()[0]
+            self.log('lr', lr, on_epoch=False, on_step=True, prog_bar=False, logger=True)
         return loss
     
     def validation_step(self, batch, batch_idx):
@@ -61,9 +57,6 @@ class LitCLIP(pytorch_lightning.LightningModule):
         preds = torch.sigmoid(preds)
         y = y.int()
         
-        #self.auroc.update(preds, y)
-        #self.ap.update(preds, y)
-        #self.log('val_ap', self.ap, on_epoch=True, prog_bar=True)
         self.log('val_loss', loss, on_epoch=True, on_step=False, prog_bar=True, logger=True)
         return preds, y
     
@@ -82,7 +75,7 @@ class LitCLIP(pytorch_lightning.LightningModule):
         auc_dict = {"val_auc/" + self.label_names[i]: class_aucs[i]
                     for i in range(len(class_aucs))}
         self.log_dict(auc_dict, on_epoch=True)
-        self.log('val_auroc_macro', class_aucs.mean(), on_epoch=True, prog_bar=True)
+        self.log('val_auroc_macro', sklearn.metrics.roc_auc_score(targets, preds, average="macro"), on_epoch=True, prog_bar=True)
         self.log('val_auroc_micro', sklearn.metrics.roc_auc_score(targets, preds, average="micro"),
                   on_epoch=True, prog_bar=True)
         
@@ -119,7 +112,8 @@ class LitCLIP(pytorch_lightning.LightningModule):
                               eps=self.eps,
                               weight_decay=self.weight_decay) #Params used from paper, the lr is smaller, more safe for fine tuning to new dataset
         
-        self.scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, self.learning_rate, steps_per_epoch=self.steps_per_epoch,
+        self.scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, self.learning_rate, 
+                                                             steps_per_epoch=self.steps_per_epoch,
                                                              epochs=self.max_epochs, pct_start=0.05)
         scheduler = {"scheduler": self.scheduler, 
                      "interval": "step" }  # necessary to make PL call the scheduler.step after every batch
@@ -127,23 +121,30 @@ class LitCLIP(pytorch_lightning.LightningModule):
     
 
 class CLIPClassifier(torch.nn.Module):
-    def __init__(self, model, mode, num_labels):
+    def __init__(self, model, mode, num_labels, visual=None):
         super().__init__()
-        self.mode = mode
+        #self.mode = mode
         self.num_labels = num_labels
+        self.mode = mode
+        self.has_visual = visual is not None
         
         # create layers
-        self.model = model
-        out_feat_size = model.text_projection.shape[1]
+        if self.has_visual:
+            self.model = visual
+            out_feat_size = self.model.output_dim
+        else:
+            self.model = model
+            out_feat_size = self.model.visual.output_dim#model.text_projection.shape[1]
         self.out = torch.nn.Linear(out_feat_size, num_labels)
-        # delete text part
+        # delete text transformer
         if hasattr(model, "transformer"):
             del model.transformer
             
-        apply_train_mode(mode, self.model)
-
     def forward(self, x):
-        x = self.encode_image(x)
+        if self.has_visual:
+            x = self.model(x)
+        else:
+            x = self.encode_image(x)
         x = self.out(x)
         return x
     

@@ -2,30 +2,67 @@ dataset_name: "mimic-cxr"
 model_name: "ViT-B/16" # ViT-L/14, ViT-B/16, ViT-B/32
 mode: "adapters" # ["adapters", "freeze", "train_norm", "full", "train_mlp_norm"]
 
-lr: 5e-5
+lr: 1e-5
 weight_decay: 0.2 # decay 0.05 in convnext, 0.2 in CLIP training
 use_augs: True
-sent_frac: 0.8 # proportion of sentences to sample during CL
+
+sent_frac: 1.0 # proportion of sentences to sample during CL
+randomize_order: 1
+
 precision: 16
 max_epochs: 10
+sl_max_epochs: 10
 val_check_interval: 1500
 gen_freq: 15
 batch_size:
-dataset_size:
+grad_acc: 1
+adjust_grad_acc_to:
+dataset_size: 1.0
+sl_dataset_size:
+
+cyclic_lambda:
 
 gpu: 2
 
+rot_aug: 45
+shift_aug: 0.15
+scale_aug: 0.1
+
 text2img_num_steps: 100
-text2img_num_feats: 0
+text2img_num_feats: 4
+text2img_batch_size: 16
+
+missing_mode: "zeros"
 
 mixup_alpha: 0.0
 mixup_labels: False
 add_noise_level: 0.0
 mult_noise_level: 0.0
 
+pretrained: 1
+down_sample_size: 256
+adapter_flow: easy
+
+do_sl: False
+do_ext: False
+
 use_ffcv: False
 debug: 0
 seed: 0
-num_workers: 16
+num_workers: 8
 pin_memory: True
 hydra.output_subdir:
+max_steps: -1
+num_gpus: 1
+use_pos_weight: 1
+strategy: "dp"
+
+
+eps: 1e-6
+beta1: 0.9
+beta2: 0.98
+
+# the following are not used in the code and only used later in plot creation:
+fixed_ds_subsampling_seed: 1
+fixed_val_ds_order: 1
+fixed_chexpert_labels: 1
