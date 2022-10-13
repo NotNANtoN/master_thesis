@@ -142,7 +142,6 @@ def load_cl_results():
     return df
 
 
-
 def cl_plot_ds_size(df, ax=None, mode="test", max_epochs=None):
     # make plot showing dataset size effect
     import matplotlib.pyplot as plt
@@ -182,22 +181,21 @@ def cl_plot_ds_size(df, ax=None, mode="test", max_epochs=None):
     print(model_df)    
     
     metrics = ["adapters_test_auc", "lin_probe_mean_test_auc"]#, "full_test_auc"]#, "new_adapters_test_auc"]
-    labels = ["CL + SL", "CL + Linear Probe"]#, "Full"]#, "New adapters"]
+    labels = ["CL + FT", "CL + LP"]#, "Full"]#, "New adapters"]
     
     
     if mode == "val":
         metrics = [l.replace("test", "val") for l in metrics]
     
-    max_epoch_vals = [10]
+    max_epoch_vals = []
     if max_epochs is not None:
         max_epoch_vals += max_epochs
     
-    if len(max_epoch_vals) > 1:
-        all_labels = []
-        for epoch_val in max_epoch_vals:
-            epoch_labels = [f"{l} {epoch_val} Epochs" for l in labels]
-            all_labels.extend(epoch_labels)
-        labels = all_labels
+    all_labels = []
+    for epoch_val in max_epoch_vals:
+        epoch_labels = [f"{l} {epoch_val} Eps." for l in labels]
+        all_labels.extend(epoch_labels)
+    labels = all_labels
         
     lin_probe_col = None
     count = 0
@@ -207,7 +205,8 @@ def cl_plot_ds_size(df, ax=None, mode="test", max_epochs=None):
             label = labels[count]
             count += 1
             
-            if max_epoch > 10 and "lin_probe" not in metric:
+            #if max_epoch > 10 and "lin_probe" not in metric:
+            if "lin_probe" not in metric:
                 continue
             
             print()
@@ -237,8 +236,10 @@ def cl_plot_ds_size(df, ax=None, mode="test", max_epochs=None):
             # take average over same dataset size
             means = epoch_df.groupby("dataset_size").mean().reset_index()
             
-            style = "-X"
+            linestyle = "solid"
+            markerstyle = "X"
             if "lin_probe" in metric:
+                markerstyle = "X"
                 if lin_probe_col is not None:
                     color = lin_probe_col
                 else:
@@ -247,30 +248,31 @@ def cl_plot_ds_size(df, ax=None, mode="test", max_epochs=None):
                     if color == "r":
                         color = next(ax._get_lines.prop_cycler)["color"]
                 if max_epoch == 10:
-                    style = "--X"
+                    linestyle = "dotted"
                 elif max_epoch == 20:
-                    style = ":X"
+                    pass
+                    #style = ":X"
                 elif max_epoch == 50:
-                    style = "-X"
+                    linestyle = "solid"
             else:
                 color = next(ax._get_lines.prop_cycler)["color"]
                 if color == "r":
                     color = next(ax._get_lines.prop_cycler)["color"]
-                style = "-o"
+                markerstyle = "o"
             print(color)
             means["scaled_dataset_size"] = 100 * means["dataset_size"]
             means.plot(x="scaled_dataset_size", y=metric, ax=ax, label=label,
-                        style=style, linewidth=2, markersize=8, color=color)
+                        linewidth=2, markersize=8, color=color, linestyle=linestyle, marker=markerstyle)
             color = ax.lines[-1].get_color()
             
             if lin_probe_col is None and "lin_probe" in metric:
                 lin_probe_col = color
             
             # ADD ERRORBAR
-            means = means[metric].to_numpy()
-            lower, upper = means - std, means + std
-            sizes = epoch_df["dataset_size"].unique() * 100
-            ax.fill_between(sizes, lower, upper, alpha=0.1, color=color)  
+            #means = means[metric].to_numpy()
+            #lower, upper = means - std, means + std
+            #sizes = epoch_df["dataset_size"].unique() * 100
+            #ax.fill_between(sizes, lower, upper, alpha=0.1, color=color)  
             
             ax.set_xscale("log", base=10)    
             # make a grid appear
