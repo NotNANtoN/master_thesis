@@ -181,7 +181,7 @@ def cl_plot_ds_size(df, ax=None, mode="test", max_epochs=None):
     print(model_df)    
     
     metrics = ["adapters_test_auc", "lin_probe_mean_test_auc"]#, "full_test_auc"]#, "new_adapters_test_auc"]
-    labels = ["CL + FT", "CL + LP"]#, "Full"]#, "New adapters"]
+    labels = ["CLS + FT", "CLS + LP"]#, "Full"]#, "New adapters"]
     
     
     if mode == "val":
